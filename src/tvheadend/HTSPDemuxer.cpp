@@ -45,8 +45,7 @@ using namespace tvheadend::utilities;
 
 HTSPDemuxer::HTSPDemuxer ( HTSPConnection &conn )
   : m_conn(conn), m_pktBuffer((size_t)-1),
-    m_seekTime(INVALID_SEEKTIME),
-    m_seeking(false),
+    m_seektime(nullptr),
     m_subscription(conn), m_lastUse(0),
     m_startTime(0), m_rdsIdx(0)
 {
@@ -90,7 +89,7 @@ void HTSPDemuxer::Abort0 ( void )
   m_streams.clear();
   m_streamStat.clear();
   m_rdsIdx = 0;
-  m_seeking = false;
+  m_seektime(nullptr);
 }
 
 
@@ -168,35 +167,66 @@ void HTSPDemuxer::Abort ( void )
   ResetStatus();
 }
 
+namespace tvheadend
+{
+
+class SubscriptionSeekTime
+{
+public:
+  SubscriptionSeekTime() = default;
+
+  ~SubscriptionSeekTime()
+  {
+    Set(INVALID_SEEKTIME); // ensure signal is sent
+  }
+
+  int64_t Get(std::unique_lock<std::recursive_mutex>& lock, uint32_t timeout)
+  {
+    m_cond.wait_for(lock, std::chrono::milliseconds(timeout), [this] { return m_flag == true; });
+    m_flag = false;
+    return m_seektime;
+  }
+
+  void Set(int64_t seektime)
+  {
+    m_seektime = seektime;
+    m_flag = true;
+    m_cond.notify_all();
+  }
+
+private:
+  std::condition_variable_any m_cond;
+  bool m_flag = false;
+  int64_t m_seektime = INVALID_SEEKTIME;
+};
+
+} // namespace tvheadend
+
 bool HTSPDemuxer::Seek(double time, bool, double *startpts)
 {
+  CLockObject lock(m_conn.Mutex());
   if (!m_subscription.IsActive())
     return false;
 
-  m_seekTime = 0;
-  m_seeking = true;
-  if (!m_subscription.SendSeek(time)) {
-    m_seeking = false;
+  SubscriptionSeekTime seekTime;
+  m_seektime = &seekTime;
+  if (!m_subscription.SendSeek(time)
     return false;
-  }
-
+    
   /* Wait for time */
-  CLockObject lock(m_conn.Mutex());
+  int64_t seekedTo =
+  (*m_seektime).Get(m_conn.Mutex(), Settings::GetInstance().GetResponseTimeout());
+  m_seektime = nullptr;
 
-  if (!m_seekCond.Wait(m_conn.Mutex(), m_seekTime, Settings::GetInstance().GetResponseTimeout()))
+  if (seekedTo == INVALID_SEEKTIME)
   {
     Logger::Log(LogLevel::LEVEL_ERROR, "failed to get subscriptionSeek response");
-    m_seeking = false;
     Flush(); /* try to resync */
     return false;
   }
-  
-  m_seeking = false;
-  if (m_seekTime == INVALID_SEEKTIME)
-    return false;
 
   /* Store */
-  *startpts = TVH_TO_DVD_TIME(m_seekTime - 1);
+  startpts = TVH_TO_DVD_TIME(seekedTo);
   Logger::Log(LogLevel::LEVEL_TRACE, "demux seek startpts = %lf", *startpts);
 
   return true;
@@ -511,7 +541,7 @@ void HTSPDemuxer::ParseMuxPacket ( htsmsg_t *m )
   if (!type)
     type = '_';
 
-  ignore = m_seeking;
+  bool ignore = m_seektime != nullptr;
 
   Logger::Log(LogLevel::LEVEL_TRACE, "demux pkt idx %d:%d type %c pts %lf len %lld%s",
            idx, pkt->iStreamId, type, pkt->pts, (long long)binlen,
@@ -761,7 +791,7 @@ void HTSPDemuxer::ParseSourceInfo ( htsmsg_t *m )
 
 void HTSPDemuxer::ParseSubscriptionStop(htsmsg_t*)
 {
-  //CLockObject lock(m_mutex);
+
 }
 
 void HTSPDemuxer::ParseSubscriptionSkip ( htsmsg_t *m )
@@ -769,15 +799,16 @@ void HTSPDemuxer::ParseSubscriptionSkip ( htsmsg_t *m )
   int64_t s64;
 
   CLockObject lock(m_conn.Mutex());
+  
+    if (m_seektime == nullptr)
+    return;
 
   if (htsmsg_get_s64(m, "time", &s64)) {
-    m_seekTime = INVALID_SEEKTIME;
+    (*m_seektime).Set(INVALID_SEEKTIME);
   } else {
-    m_seekTime = s64 < 0 ? 1 : s64 + 1; /* it must not be zero! */
+   (*m_seektime).Set(s64 < 0 ? 0 : s64);
     Flush(); /* flush old packets (with wrong pts) */
   }
-  m_seeking = false;
-  m_seekCond.Broadcast();
 }
 
 void HTSPDemuxer::ParseSubscriptionSpeed ( htsmsg_t *m )
