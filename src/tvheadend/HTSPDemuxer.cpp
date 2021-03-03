@@ -26,8 +26,6 @@
 #include "Settings.h"
 #include "utilities/Logger.h"
 
-#include "kodi/addon-instance/PVR.h"
-
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
