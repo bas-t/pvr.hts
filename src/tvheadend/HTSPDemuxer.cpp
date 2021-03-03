@@ -19,15 +19,21 @@
  *
  */
 
+
 #include "HTSPDemuxer.h"
 
-#include "../client.h"
 #include "HTSPConnection.h"
 #include "Settings.h"
 #include "utilities/Logger.h"
-#include "xbmc_codec_descriptor.hpp"
 
-#define TVH_TO_DVD_TIME(x) (static_cast<double>(x) * DVD_TIME_BASE / 1000000.0f)
+#include "kodi/addon-instance/PVR.h"
+
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <ctime>
+
+#define TVH_TO_DVD_TIME(x) (static_cast<double>(x) * STREAM_TIME_BASE / 1000000.0f)
 
 #define INVALID_SEEKTIME (-1)
 #define SPEED_NORMAL (1000) // x1 playback speed

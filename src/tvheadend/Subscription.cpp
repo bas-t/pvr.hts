@@ -21,11 +21,13 @@
 
 #include "Subscription.h"
 
-#include "utilities/LocalizedString.h"
-#include "utilities/Logger.h"
 #include "HTSPConnection.h"
+#include "utilities/Logger.h"
 
-using namespace P8PLATFORM;
+#include "kodi/General.h"
+
+#include <cstring>
+
 using namespace tvheadend;
 using namespace tvheadend::utilities;
 
